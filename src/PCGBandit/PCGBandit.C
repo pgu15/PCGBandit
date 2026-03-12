@@ -34,8 +34,6 @@ namespace Foam
     dictionary learningDicts;
 
     // --- Configuration space specification
-    dictionary GAMGOptions;
-
     List<word> wordGAMGParams = {"smoother", "agglomerator", "directSolveCoarsest"};
     List<word> labelGAMGParams = {"nCellsInCoarsestLevel", "mergeLevels", "nPreSweeps", "nPostSweeps", "nFinestSweeps", "nVcycles"};
 
@@ -74,12 +72,12 @@ Foam::PCGBandit::PCGBandit
 :
     lduMatrix::solver
     (
-          fieldName,
-          matrix,
-          interfaceBouCoeffs,
-          interfaceIntCoeffs,
-          interfaces,
-          solverControls
+        fieldName,
+        matrix,
+        interfaceBouCoeffs,
+        interfaceIntCoeffs,
+        interfaces,
+        solverControls
     ),
     numDroptols_(0),
     dGAMG_(0),
@@ -109,11 +107,12 @@ Foam::PCGBandit::PCGBandit
     randomUniform_ = Switch(solverControls.getOrDefault<word>("randomUniform", "no"));
     banditAlgorithm_ = solverControls.getOrDefault<word>("banditAlgorithm", "TsallisINF");
 
-    if (!learningDicts.found(banditName_)) {
-        // --- Configuration space initialization
-        dictionary& learningDict = learningDicts.subDictOrAdd(banditName_);
+    dictionary& learningDict = learningDicts.subDictOrAdd(banditName_);
+    dictionary& GAMGOptions = learningDict.subDictOrAdd("GAMGOptions");
 
-        if (Pstream::myProcNo() == 0 && createFirst)
+    if (!learningDict.found("dGAMG")) {
+        // --- Configuration space initialization
+        if (Pstream::myProcNo() == 0)
         {
             rndGen.reset(seed_);
         }
@@ -124,7 +123,8 @@ Foam::PCGBandit::PCGBandit
         numDroptols_ = solverControls.getOrDefault<label>("numDroptols", 0);
 
     
-        void addLabelListOrDefault = [&](const word& fvName, const word& keyName, const List<label>& defList)
+        // Label Parameters
+        auto addLabelListOrDefault = [&](const word& fvName, const word& keyName, const List<label>& defList)
         {
         List<label> vals = solverControls.getOrDefault<List<label>>(fvName, defList);
             if (vals.empty())
@@ -140,8 +140,7 @@ Foam::PCGBandit::PCGBandit
         addLabelListOrDefault("nVcyclesOptions", "nVcycles", {1, 2});
 
         // Word Parameters (string options)
-
-        void addWordListOrDefault = [&](const word& fvName, const word& keyName, const List<word>& defList)
+        auto addWordListOrDefault = [&](const word& fvName, const word& keyName, const List<word>& defList)
         {
             List<word> vals = solverControls.getOrDefault<List<word>>(fvName, defList);
             if (vals.empty())
@@ -218,12 +217,13 @@ void Foam::PCGBandit::queryLearner
 ) const
 {
     label i = static_;
-
+    dictionary& learningDict = learningDicts.subDictOrAdd(banditName_);
+    dictionary& GAMGOptions = learningDict.subDict("GAMGOptions");
+    
     if (i == -1) {
 
         if (Pstream::myProcNo() == 0) {
 
-            dictionary& learningDict = learningDicts.subDictOrAdd(banditName_);
             label d = numDroptols_ + 1 + dGAMG_;
             #ifdef PCGB_DEBUG
             Info<< "PCGBandit INFO:" << endl;
@@ -340,21 +340,21 @@ Foam::scalar Foam::PCGBandit::perIterationCostEstimate
     label nVcycles = subDict.getOrDefault<label>("nVcycles", 2);
     label nSweeps;
     word smoother = subDict.get<word>("smoother");
-    const GAMGAgglomeration *agglomeration =& GAMGAgglomeration::New(matrix_, subDict);
+    const GAMGAgglomeration *agglomeration = &GAMGAgglomeration::New(matrix_, subDict);
 
     cost += 2 * nnz + nCells;
     for (label i = 0; i <= agglomeration->size(); i++) {
 
         if (i > 0) {
-            nCells = agglomeration->nCells(i - 1);
-            nnz = agglomeration->nFaces(i - 1);
+            nCells = agglomeration->nCells(i-1);
+            nnz = agglomeration->nFaces(i-1);
             cost += (2 * nnz + nCells) * nVcycles;
             nSweeps = 0;
             if (nPreSweeps > 0) {
-                nSweeps += min(nPreSweeps + preSweepsLevelMultiplier * (i - 1), maxPreSweeps);
+                nSweeps += min(nPreSweeps+preSweepsLevelMultiplier*(i-1), maxPreSweeps);
             }
             if (nPostSweeps > 0) {
-                nSweeps += min(nPostSweeps + postSweepsLevelMultiplier * (i - 1), maxPostSweeps);
+                nSweeps += min(nPostSweeps+postSweepsLevelMultiplier*(i-1), maxPostSweeps);
             }
         } else {
             nSweeps = subDict.getOrDefault<label>("nFinestSweeps", 2);
@@ -399,7 +399,8 @@ Foam::scalar Foam::PCGBandit::totalCostEstimate
         backstopIter = label(scalar(backstopIter) * perIterationCostEstimate("DIC") / pICE);
     }
     if (nIterations > backstopIter) {
-        cost += pICE * scalar(backstopIter) + perIterationCostEstimate("DIC") * scalar(nIterations - backstopIter + label(preconditioner != "DIC"));
+        cost += pICE * scalar(backstopIter) 
+                + perIterationCostEstimate("DIC") * scalar(nIterations - backstopIter + label(preconditioner != "DIC"));
     } else {
         cost += pICE * scalar(nIterations);
     }
@@ -426,8 +427,7 @@ Foam::solverPerformance Foam::PCGBandit::scalarSolve
     Info<< "\tsq Frob norm of current diag: " << gSum(sqr(currentDiag)) << endl;
     Info<< "\tsq Frob norm of current lower: " << gSum(sqr(currentLower)) << endl;
     Info<< "\tsq Eucl norm of current target: " << gSum(sqr(currentTarget)) << endl;
-    if (initialDiags.found(banditName_))
-    {
+    if (initialDiags.found(banditName_)) {
         Info<< "\tsq Frob dist from initial diag: " << gSum(sqr(currentDiag - initialDiags.get<solveScalarField>(banditName_))) << endl;
         Info<< "\tsq Frob dist from initial lower: " << gSum(sqr(currentLower - initialLowers.get<solveScalarField>(banditName_))) << endl;
         Info<< "\tsq Eucl norm from initial target: " << gSum(sqr(currentTarget - initialTargets.get<solveScalarField>(banditName_))) << endl;
@@ -496,17 +496,17 @@ Foam::solverPerformance Foam::PCGBandit::scalarSolve
 
     // --- Calculate normalised residual norm
     solverPerf.initialResidual() =
-        gSumMag(rA, matrix().mesh().comm()) 
-        /normFactor;
+        gSumMag(rA, matrix().mesh().comm())
+       /normFactor;
     solverPerf.finalResidual() = solverPerf.initialResidual();
 
     for (label backstop = 0; backstop <= label(backstop_ != 0); backstop++) {
 
         // --- Check convergence, solve if not converged
-        if 
+        if
         (
-            minIter_ > 0 
-        || !solverPerf.checkConvergence(tolerance_, relTol_, log_)
+            minIter_ > 0
+         || !solverPerf.checkConvergence(tolerance_, relTol_, log_)
         )
         {
 
@@ -532,7 +532,9 @@ Foam::solverPerformance Foam::PCGBandit::scalarSolve
 
                 // --- Default backstop iteration computed via a cost estimate ratio
                 if (backstop_ == -1) {
-                    backstopIter = label(scalar(maxIter) * perIterationCostEstimate("DIC") / perIterationCostEstimate(subDict.get<word>("preconditioner")));
+                    backstopIter = label(scalar(maxIter)
+                                         * perIterationCostEstimate("DIC") 
+                                         / perIterationCostEstimate(subDict.get<word>("preconditioner")));
                     maxIter = backstopIter;
                 }
                 preconstructTime -= clockValue::now();
@@ -554,16 +556,16 @@ Foam::solverPerformance Foam::PCGBandit::scalarSolve
 
                 if (solverPerf.nIterations() == 0 || solverPerf.nIterations() == backstopIter)
                 {
-                    for (label cell = 0; cell < nCells; cell++) 
+                    for (label cell=0; cell<nCells; cell++) 
                     {
                         pAPtr[cell] = wAPtr[cell];
                     }
-                } 
-                else 
+                }
+                else
                 {
                     solveScalar beta = wArA/wArAold;
 
-                    for (label cell = 0; cell < nCells; cell++) 
+                    for (label cell=0; cell<nCells; cell++) 
                     {
                         pAPtr[cell] = wAPtr[cell] + beta * pAPtr[cell];
                     }
@@ -575,23 +577,23 @@ Foam::solverPerformance Foam::PCGBandit::scalarSolve
                 solveScalar wApA = gSumProd(wA, pA, matrix().mesh().comm());
 
                 // --- Test for singularity
-                if (solverPerf.checkSingularity(mag(wApA) / normFactor)) break;
+                if (solverPerf.checkSingularity(mag(wApA)/normFactor)) break;
 
                 // --- Update solution and residual:
 
                 solveScalar alpha = wArA/wApA;
 
-                for (label cell = 0; cell < nCells; cell++) 
+                for (label cell=0; cell<nCells; cell++) 
                 {
-                    psiPtr[cell] += alpha * pAPtr[cell];
-                    rAPtr[cell] -= alpha * wAPtr[cell];
+                    psiPtr[cell] += alpha*pAPtr[cell];
+                    rAPtr[cell] -= alpha*wAPtr[cell];
                 }
 
                 solverPerf.finalResidual() =
                     gSumMag(rA, matrix().mesh().comm()) 
-                    /normFactor;
+                   /normFactor;
 
-            } while 
+            } while
             (
                 (
                   ++solverPerf.nIterations() < maxIter
@@ -603,8 +605,8 @@ Foam::solverPerformance Foam::PCGBandit::scalarSolve
         }
 
         // --- Exit if converged or if already tried backstopping
-        if (backstop == 1 || solverPerf.checkConvergence(tolerance_, relTol_, log_))
-        {
+        if (backstop == 1 || solverPerf.checkConvergence(tolerance_, relTol_, log_)) 
+        { 
             matrix().setResidualField
             (
                 ConstPrecisionAdaptor<scalar, solveScalar>(rA)(),
@@ -660,8 +662,7 @@ Foam::solverPerformance Foam::PCGBandit::scalarSolve
     Info<< ", learningTime=" << -learningTime;
     Info<< ", solverTime=" << -solverTime;
     Info<< ", PCGTime=" << PCGTime;
-    if (deterministic_ && solverPerf.nIterations() > 0)
-    {
+    if (deterministic_ && solverPerf.nIterations() > 0) {
         Info<< ", costEstimate=" << costEstimate;
     }
     Info<< endl;
