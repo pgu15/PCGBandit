@@ -11,7 +11,6 @@
 #include "GAMGAgglomeration.H"
 #include "Pstream.H"
 #include "Random.H"
-#include "similarityMatrix.C"
 
 //#define PCGB_DEBUG
 //#define DUMP_ABSOL
@@ -184,6 +183,31 @@ Foam::PCGBandit::PCGBandit
             }
         }
 
+        // Resolve nCICLPOW entries into nCellsInCoarsestLevel options
+        if (solverControls.found("nCICLPow")) {
+            label nCells = returnReduce(matrix.diag().size(), sumOp<label>());
+            const scalarList exponents(solverControls.lookup("nCICLPow"));
+
+            for (const scalar exponent : exponents) {
+                if (exponent <= 0 || exponent >= 1) {
+                    FatalErrorInFunction << "nCICLPow exponent must be between 0 and 1 (exclusive), got " << exponent << exit(FatalError);
+                }
+                label resolved = max(label(1), label(Foam::pow(scalar(nCells), exponent)));
+                word resolvedStr = Foam::name(resolved);
+                if (!GAMGOptions[3].found(resolvedStr)) {
+                    GAMGOptions[3].append(resolvedStr);
+                }
+            }
+
+            dGAMG = 0;
+            for (label j = 0; j < GAMGDefaultLists.size(); ++j) {
+                dGAMG = max(dGAMG, 1) * max(GAMGOptions[j].size(), min(dGAMG, 1));
+            }
+            if (GAMGOptions[3].size() > 1) {
+                cacheAgglomeration = false;
+            }
+        }
+
         if (cacheAgglomeration || static_ > -1) {
             cacheAgglomeration = Switch(solverControls.getOrDefault<word>("cacheAgglomeration", "yes"));
         }
@@ -282,7 +306,6 @@ void Foam::PCGBandit::queryLearner
         Info<< "Static Preconditioner: ";
         #endif
     }
-
 
     subDict = preconditionerDicts[i];
     preconditionerDict.set("preconditioner", subDict);
