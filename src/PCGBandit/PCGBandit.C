@@ -132,6 +132,7 @@ Foam::PCGBandit::PCGBandit
 
         bool cacheAgglomeration = true;
         label dGAMG = 0;
+        label nCellsGlobal = -1;
         List<List<word>> GAMGOptions(GAMGDefaultLists.size());
         for (label j = 0; j < GAMGDefaultLists.size(); ++j) {
             const word param = GAMGDefaultLists[j].first();
@@ -162,7 +163,23 @@ Foam::PCGBandit::PCGBandit
                                         opts.append(finest);
                                     }
                                 }
-                            } else {
+                            } else if (param == "nCellsInCoarsestLevel" && config.find('.') != std::string::npos) {
+                                // treat as exponent and resolve to nCells^exponent
+                                scalar exponent = readScalar(config);
+                                if (exponent <= 0 || exponent >= 1) {
+                                    FatalErrorInFunction
+                                        << "nCellsInCoarsestLevelTune exponent must be between 0 and 1 (exclusive), got "
+                                        << exponent << exit(FatalError);
+                                }
+                                if (nCellsGlobal == -1) {
+                                    nCellsGlobal = returnReduce(matrix.diag().size(), sumOp<label>());
+                                }
+                                label resolved = max(label(1), label(Foam::pow(scalar(nCellsGlobal), exponent)));
+                                word resolvedStr = Foam::name(resolved);
+                                if (!opts.found(resolvedStr)) {
+                                    opts.append(resolvedStr);
+                                }
+                            } else { 
                                 opts.append(config);
                             }
                         }
@@ -181,31 +198,9 @@ Foam::PCGBandit::PCGBandit
             if (noCacheAgglomeration.found(param) && GAMGOptions[j].size() > 1) {
                 cacheAgglomeration = false; // turn off cacheAgglomeration if tuning any param that affects agglomeration
             }
-        }
 
-        // Resolve nCICLPOW entries into nCellsInCoarsestLevel options
-        if (solverControls.found("nCICLPow")) {
-            label nCells = returnReduce(matrix.diag().size(), sumOp<label>());
-            const scalarList exponents(solverControls.lookup("nCICLPow"));
-
-            for (const scalar exponent : exponents) {
-                if (exponent <= 0 || exponent >= 1) {
-                    FatalErrorInFunction << "nCICLPow exponent must be between 0 and 1 (exclusive), got " << exponent << exit(FatalError);
-                }
-                label resolved = max(label(1), label(Foam::pow(scalar(nCells), exponent)));
-                word resolvedStr = Foam::name(resolved);
-                if (!GAMGOptions[3].found(resolvedStr)) {
-                    GAMGOptions[3].append(resolvedStr);
-                }
-            }
-
-            dGAMG = 0;
-            for (label j = 0; j < GAMGDefaultLists.size(); ++j) {
-                dGAMG = max(dGAMG, 1) * max(GAMGOptions[j].size(), min(dGAMG, 1));
-            }
-            if (GAMGOptions[3].size() > 1) {
-                cacheAgglomeration = false;
-            }
+            Info << " options=" << GAMGOptions[3]
+                 << " dGAMG=" << dGAMG << endl;
         }
 
         if (cacheAgglomeration || static_ > -1) {
