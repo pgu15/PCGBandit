@@ -133,6 +133,7 @@ Foam::PCGBandit::PCGBandit
         bool cacheAgglomeration = true;
         label dGAMG = 0;
         label nCellsGlobal = -1;
+        label nCellsMin = -1;
         List<List<word>> GAMGOptions(GAMGDefaultLists.size());
         for (label j = 0; j < GAMGDefaultLists.size(); ++j) {
             const word param = GAMGDefaultLists[j].first();
@@ -163,23 +164,37 @@ Foam::PCGBandit::PCGBandit
                                         opts.append(finest);
                                     }
                                 }
-                            } else if (param == "nCellsInCoarsestLevel" && config.find('.') != std::string::npos) {
-                                // treat as exponent and resolve to nCells^exponent
-                                scalar exponent = readScalar(config);
-                                if (exponent <= 0 || exponent >= 1) {
-                                    FatalErrorInFunction
-                                        << "nCellsInCoarsestLevelTune exponent must be between 0 and 1 (exclusive), got "
-                                        << exponent << exit(FatalError);
+                            } else if (param == "nCellsInCoarsestLevel") {
+                                if (nCellsMin == -1) {
+                                    nCellsMin = returnReduce(matrix.diag().size(), minOp<label>());
                                 }
-                                if (nCellsGlobal == -1) {
-                                    nCellsGlobal = returnReduce(matrix.diag().size(), sumOp<label>());
+                                label resolved;
+                                if (config.find('.') != string::npos) {
+                                    scalar exponent = readScalar(config);
+                                    if (exponent <= 0 || exponent >= 1) {
+                                        FatalErrorInFunction
+                                            << "nCellsInCoarsestLevelTune exponent must be between 0 and 1 (exclusive), got "
+                                            << exponent << exit(FatalError);
+                                    }
+                                    if (nCellsGlobal == -1) {
+                                        nCellsGlobal = returnReduce(matrix.diag().size(), sumOp<label>());
+                                    }
+                                    resolved = label(Foam::pow(scalar(nCellsGlobal), exponent));
+                                } else {
+                                    resolved = readLabel(config);
                                 }
-                                label resolved = max(label(1), label(Foam::pow(scalar(nCellsGlobal), exponent)));
-                                word resolvedStr = Foam::name(resolved);
+                                label clamped = max(label(1), min(resolved, nCellsMin));
+                                if (clamped != resolved) {
+                                    WarningInFunction
+                                        << "nCellsInCoarsestLevel value " << resolved
+                                        << " clamped to " << clamped
+                                        << " (per-processor min cells: " << nCellsMin << ")" << endl;
+                                }
+                                word resolvedStr = Foam::name(clamped);
                                 if (!opts.found(resolvedStr)) {
                                     opts.append(resolvedStr);
                                 }
-                            } else { 
+                            } else {
                                 opts.append(config);
                             }
                         }
