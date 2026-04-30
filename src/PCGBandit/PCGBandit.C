@@ -11,6 +11,7 @@
 #include "GAMGAgglomeration.H"
 #include "Pstream.H"
 #include "Random.H"
+#include "similarityMatrix.C"
 
 //#define PCGB_DEBUG
 //#define DUMP_ABSOL
